@@ -1,7 +1,10 @@
 ---
 task: P1-T0
 title: Repo setup
-status: assigned
+status: done
+completed: 2026-10-28
+commit: 8430730
+verified_by: planner
 assigned_to: worker
 date: 2026-10-28
 approved_by: user
