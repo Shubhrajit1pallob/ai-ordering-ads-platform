@@ -1,0 +1,32 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+*.tfvars
+!*.example.tfvars
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# Node
+node_modules/
+dist/
+
+# Secrets / OS
+.env
+.env.*
+.DS_Store
+
+# Claude local settings
+.claude/settings.local.json
+
+# Source PDFs: kept on disk, never committed
+Local Store AI Ordering and Ads Platform.pdf
+Local Store Platform Business Plan.pdf
