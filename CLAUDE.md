@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Pre-pilot. The repo is a skeleton with Python (uv, ruff, pytest) and pre-commit tooling and no application or Terraform code yet; the two source PDFs are kept on disk but git-ignored.
+Pre-pilot. The repo is a skeleton with Python (uv, ruff, pytest) and pre-commit tooling, the bootstrap Terraform in `infra/bootstrap/` (state bucket, GitHub OIDC, permissions boundary, deploy and plan roles) and the dev backend wiring in `infra/envs/dev/`, and no application code yet; the two source PDFs are kept on disk but git-ignored.
 
 - `Local Store AI Ordering and Ads Platform.pdf`: the technical design brief (architecture, workflows, stack, build plan). **This is the active project and the source of truth for what gets built.**
 - `Local Store Platform Business Plan.pdf`: a separate, later use case: taking the finished platform into a business setting (pricing, go-to-market, pilot metrics, phase gates). Use it as background context only; it does not set current scope or build order.
@@ -20,10 +20,13 @@ When a design decision isn't covered by the technical brief, flag it as an open 
 - Format: `uv run ruff format .`
 - All hooks: `pre-commit run --all-files`
 - Terraform format: `terraform fmt -recursive infra`
+- Terraform validate (no backend, no AWS): `terraform -chdir=infra/bootstrap init -backend=false && terraform -chdir=infra/bootstrap validate`, and the same for `infra/envs/dev`
 
 ## How work is organised
 
 A planner session writes task briefs in `tasks/P<phase>-T<n>-<slug>.md` and assigns them one at a time. A worker session implements and verifies each brief and reports back. A vault agent documents in the user's Obsidian vault from notes in `tasks/docs/`. Only one task is in progress at a time; a brief's frontmatter `status` tracks it (`assigned` → `done`). Workers stay within a brief's scope and report anything out of scope instead of doing it.
+
+**Agents write, the user runs:** agents write code, config and docs and run only static checks (`terraform fmt`/`validate` with `-backend=false`, ruff, pytest with moto, pre-commit). The user does all version control (branches, commits, repo, push) and runs every Terraform or AWS command with real effects. Each brief ends with a runbook of commands for the user.
 
 ## What the platform does
 
@@ -55,11 +58,20 @@ Web app on CloudFront (or the Bedrock chat assistant answering from the catalog)
 
 ## Design rules that span components
 
-- **Multi-tenant from day one:** every record carries a store ID, with IAM and query-level isolation. Also log usage (AI calls, messages, orders) with the store ID and tag store-specific resources, because per-store cost tracking sets the pricing floor.
+- **Multi-tenant from day one:** every record carries a store ID, with IAM and query-level isolation. Also log usage (AI calls, messages, orders) with the store ID and tag store-specific resources, because per-store cost tracking sets the pricing floor. Concretely (pooled model: all stores share the same infrastructure):
+  - The store ID comes from the caller's Cognito token (`store_id` claim), never from the request body, path or query.
+  - DynamoDB keys start with the store (`STORE#<id>#...`), so every query is scoped to one store.
+  - Lambda roles that touch tenant data are limited with `dynamodb:LeadingKeys` to the caller's store where the access pattern allows it.
+  - S3 objects live under a per-store prefix (`store/<id>/...`); presigned URLs are issued only for the caller's prefix.
+  - Per-store settings (branding, channels, ad budgets, cost-per-order limit, pickup hours) live in a tenant record; per-store secrets in Secrets Manager under `lsp/<env>/store/<id>/...`.
+  - Every API task includes a test that store A is denied store B's data.
+- **Integrations only through the API, events and widgets:** outside businesses connect via the versioned public API (`/v1`, OpenAPI spec, per-client credentials carrying the store ID), outbound webhooks (EventBridge API destinations, signed), data imports, and embeddable widgets. No tenant code runs inside the platform and nothing outside it gets direct database access.
+- **Serverless by default:** stay on Lambda, Step Functions and managed services. Keep services stateless so they could move to containers later; if one outgrows Lambda, go one step at a time (Lambda container image → ECS Fargate → EKS) for that service only. See F13 in `tasks/follow-ups.md`.
 - **AI drafts, code checks, humans approve:** nothing AI-generated (deals, ad copy, spend) goes live without code validation and staff or owner approval. Bedrock output that code consumes must be forced to a fixed JSON schema and validated before use.
 - **Bedrock usage:** call from Lambda via boto3 (Converse API for text models). Each Lambda role gets `bedrock:InvokeModel` only for the models it uses. Text model (Claude or Amazon Nova) for extraction, ad copy and chat; image model (e.g. Nova Canvas) for ad images. Check the Bedrock console for current model names and regional availability before choosing.
 - **No card data stored:** Stripe handles payments, keeping the platform out of PCI scope.
 - **Budget guardrails:** daily spend caps and auto-pause on high cost per order; ad API tokens live in Secrets Manager.
+- **Permissions boundary on every role:** any IAM role created by Terraform outside `infra/bootstrap/` must set `permissions_boundary` to `lsp-workload-boundary` and be named `lsp-*`; the deploy role can't create it otherwise.
 - **Everything as code:** Terraform modules per component, GitHub Actions with OIDC (no stored AWS keys), separate dev and prod.
 - **Observability:** CloudWatch dashboards and alarms for failed orders, queue depth, AI errors and cost per order.
 
